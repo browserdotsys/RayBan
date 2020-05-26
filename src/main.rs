@@ -1,12 +1,14 @@
 extern crate minifb;
+extern crate num_cpus;
+extern crate crossbeam;
 
 use minifb::{Key, Window, WindowOptions};
 use std::time::Instant;
+use std::sync::Arc;
 
 const WIDTH: usize = 640;
 const HEIGHT: usize = 480;
 const MAX_RAY_DEPTH: u32 = 5;
-
 
 #[derive(Debug,Copy,Clone)]
 struct Vec3 {
@@ -51,6 +53,24 @@ impl Vec3 {
         (((1.0_f32.min(self.x) * 255.0) as u32) << 16) |
         (((1.0_f32.min(self.y) * 255.0) as u32) <<  8) |
          ((1.0_f32.min(self.z) * 255.0) as u32)
+    }
+
+    #[allow(dead_code)]
+    fn from_color(color: u32) -> Vec3 {
+        Vec3::new(
+           (((color >> 16) & 0xff) as f32) / 255.0,
+           (((color >>  8) & 0xff) as f32) / 255.0,
+            ((color        & 0xff) as f32) / 255.0,
+        )
+    }
+
+    #[allow(dead_code)]
+    fn powf(&self, exp: f32) -> Vec3 {
+        Vec3::new(
+            self.x.powf(exp),
+            self.y.powf(exp),
+            self.z.powf(exp),
+        )
     }
 }
 
@@ -150,6 +170,10 @@ impl Sphere {
         let t1 = tca + thc;
         (true, t0, t1)
     }
+
+    fn is_light(&self) -> bool {
+        self.emission_color.x > 0.0
+    }
 }
 
 fn mix(a: f32, b: f32, m: f32) -> f32
@@ -211,8 +235,7 @@ fn trace(rayorig: Vec3, raydir: Vec3, spheres: &Vec<Sphere>, depth: u32) -> Vec3
     }
     else {
         for (i, s1) in spheres.iter().enumerate() {
-            if s1.emission_color.x > 0.0 {
-                // this is a light
+            if s1.is_light() {
                 let mut transmission = Vec3::new_const(1.0);
                 let mut light_direction = s1.center - phit;
                 light_direction.normalize();
@@ -233,26 +256,30 @@ fn trace(rayorig: Vec3, raydir: Vec3, spheres: &Vec<Sphere>, depth: u32) -> Vec3
     surface_color + sphere.emission_color
 }
 
-fn render(spheres: &Vec<Sphere>, buffer: &mut Vec<u32>) {
+fn render(spheres: &Vec<Sphere>, buffer: &mut [u32], idx: usize) {
     let invwidth = 1.0 / (WIDTH as f32);
     let invheight = 1.0 / (HEIGHT as f32);
     let fov = 30.0;
     let aspectratio = (WIDTH as f32)/ (HEIGHT as f32);
     let angle = (std::f32::consts::PI * 0.5 * fov / 180.0).tan();
-    for y in 0..HEIGHT {
-        for x in 0..WIDTH {
-            let xx = (2.0 * ((x as f32 + 0.5) * invwidth) - 1.0) * angle * aspectratio;
-            let yy = (1.0 - 2.0 * ((y as f32 + 0.5) * invheight)) * angle;
-            let mut raydir = Vec3::new(xx, yy, -1.0);
-            raydir.normalize();
-            let traced = trace(Vec3::new_const(0.0), raydir, spheres, 0);
-            buffer[y*WIDTH+x] = traced.to_color();
-        }
+    let mut i = idx;
+    for elem in buffer {
+        let x = i % WIDTH;
+        let y = i / WIDTH;
+        let xx = (2.0 * ((x as f32 + 0.5) * invwidth) - 1.0) * angle * aspectratio;
+        let yy = (1.0 - 2.0 * ((y as f32 + 0.5) * invheight)) * angle;
+        let mut raydir = Vec3::new(xx, yy, -1.0);
+        raydir.normalize();
+        let traced = trace(Vec3::new_const(0.0), raydir, spheres, 0);
+        *elem = traced.to_color();
+
+        i += 1;
     }
 }
 
 fn main() {
     let mut buffer: Vec<u32> = vec![0; WIDTH * HEIGHT];
+    let ncpu = num_cpus::get();
 
     let mut window = Window::new(
         "RayBan - ESC to exit",
@@ -264,7 +291,7 @@ fn main() {
         panic!("{}", e);
     });
 
-    let spheres = vec![
+    let spheres = Arc::new(vec![
         Sphere::new(Vec3::new(0.0,-10004.0,-20.0),  10000.0, Vec3::new(0.20,0.20,0.20), 0.0, 0.0),
         Sphere::new(Vec3::new(0.0,0.0,-20.0),           4.0, Vec3::new(1.00,0.32,0.36), 1.0, 0.5),
         Sphere::new(Vec3::new(5.0,-1.0,-15.0),          2.0, Vec3::new(0.90,0.76,0.46), 1.0, 0.0),
@@ -273,16 +300,30 @@ fn main() {
         // light
         Sphere::new_withlight(Vec3::new(0.0,20.0,-30.0), 3.0, Vec3::new(0.00,0.00,0.00 ), 0.0, 0.0,
             Vec3::new_const(3.0)),
-    ];
+    ]);
 
     // Limit to max ~60 fps update rate
-    window.limit_update_rate(Some(std::time::Duration::from_micros(16600)));
+    //window.limit_update_rate(Some(std::time::Duration::from_micros(16600)));
 
+    let mut started = false;
     while window.is_open() && !window.is_key_down(Key::Escape) {
-        let start = Instant::now();
-        render(&spheres, &mut buffer);
-        let ms = start.elapsed().as_millis();
-        println!("Rendered in {:?} ms", ms);
+        if window.is_key_down(Key::Space) {
+            started = true;
+        }
+        if started {
+            let start = Instant::now();
+            let chunk_size = (WIDTH * HEIGHT) / ncpu;
+            let _ = crossbeam::scope(|scope| {
+                for (i, chunk) in buffer.chunks_mut(chunk_size).enumerate() {
+                    let sph = spheres.clone();
+                    scope.spawn(move |_| 
+                        render(&sph, chunk, i*chunk_size)
+                    );
+                }
+            });
+            let ms = start.elapsed().as_millis();
+            println!("Rendered in {:?} ms", ms);
+        }
 
         window
             .update_with_buffer(&buffer, WIDTH, HEIGHT)
