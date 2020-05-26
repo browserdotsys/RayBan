@@ -1,6 +1,6 @@
 extern crate minifb;
 
-use minifb::{Key, Window, WindowOptions, MouseMode, MouseButton};
+use minifb::{Key, Window, WindowOptions};
 use std::time::Instant;
 
 const WIDTH: usize = 640;
