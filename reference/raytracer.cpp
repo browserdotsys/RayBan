@@ -27,6 +27,7 @@
 #include <vector>
 #include <iostream>
 #include <cassert>
+#include <chrono>
 
 #if defined __linux__ || defined __APPLE__
 // "Compiled for Linux
@@ -131,8 +132,7 @@ Vec3f trace(
     const Vec3f &rayorig,
     const Vec3f &raydir,
     const std::vector<Sphere> &spheres,
-    const int &depth,
-    bool debug)
+    const int &depth)
 {
     //if (raydir.length() != 1) std::cerr << "Error " << raydir << std::endl;
     float tnear = INFINITY;
@@ -154,9 +154,6 @@ Vec3f trace(
     Vec3f phit = rayorig + raydir * tnear; // point of intersection
     Vec3f nhit = phit - sphere->center; // normal at the intersection point
     nhit.normalize(); // normalize normal direction
-    if (debug) {
-        std::cout << "nhit: " << nhit << std::endl;
-    }
     // If the normal and the view direction are not opposite to each other
     // reverse the normal direction. That also means we are inside the sphere so set
     // the inside bool to true. Finally reverse the sign of IdotN which we want
@@ -172,13 +169,8 @@ Vec3f trace(
         // are already normalized)
         Vec3f refldir = raydir - nhit * 2 * raydir.dot(nhit);
         refldir.normalize();
-        if (debug) {
-            std::cout << "refldir: " << refldir << std::endl;
-            std::cout << "facingratio: " << facingratio << std::endl;
-            std::cout << "fresneleffect: " << fresneleffect << std::endl;
-        }
 
-        Vec3f reflection = trace(phit + nhit * bias, refldir, spheres, depth + 1, debug);
+        Vec3f reflection = trace(phit + nhit * bias, refldir, spheres, depth + 1);
         Vec3f refraction = 0;
         // if the sphere is also transparent compute refraction ray (transmission)
         if (sphere->transparency) {
@@ -187,22 +179,12 @@ Vec3f trace(
             float k = 1 - eta * eta * (1 - cosi * cosi);
             Vec3f refrdir = raydir * eta + nhit * (eta *  cosi - sqrt(k));
             refrdir.normalize();
-            refraction = trace(phit - nhit * bias, refrdir, spheres, depth + 1, debug);
-            if (debug) {
-                std::cout << "refrdir: " << refrdir << std::endl;
-                std::cout << "refraction: " << refraction << std::endl;
-            }
+            refraction = trace(phit - nhit * bias, refrdir, spheres, depth + 1);
         }
         // the result is a mix of reflection and refraction (if the sphere is transparent)
         surfaceColor = (
             reflection * fresneleffect +
             refraction * (1 - fresneleffect) * sphere->transparency) * sphere->surfaceColor;
-        if (debug) {
-            std::cout << "surfaceColor: " << surfaceColor << std::endl;
-            std::cout << " reflection: " << reflection << " fresneleffect: " << fresneleffect <<
-                         " refraction: " << refraction << " sphere.transparency: " << sphere->transparency <<
-                         " sphere.surface_color: " << sphere->surfaceColor << std::endl;
-        }
     }
     else {
         // it's a diffuse object, no need to raytrace any further
@@ -237,6 +219,9 @@ Vec3f trace(
 //[/comment]
 void render(const std::vector<Sphere> &spheres)
 {
+    using namespace std::chrono;
+    high_resolution_clock::time_point t1 = high_resolution_clock::now();
+    
     unsigned width = 640, height = 480;
     Vec3f *image = new Vec3f[width * height], *pixel = image;
     float invWidth = 1 / float(width), invHeight = 1 / float(height);
@@ -249,12 +234,13 @@ void render(const std::vector<Sphere> &spheres)
             float yy = (1 - 2 * ((y + 0.5) * invHeight)) * angle;
             Vec3f raydir(xx, yy, -1);
             raydir.normalize();
-            *pixel = trace(Vec3f(0), raydir, spheres, 0, x == 320 && y == 366);
-            if (x == 320 && y == 366) {
-                std::cout << "Debug: 320,366 -> " << *pixel << std::endl;
-            }
+            *pixel = trace(Vec3f(0), raydir, spheres, 0);
         }
     }
+    high_resolution_clock::time_point t2 = high_resolution_clock::now();
+    duration<double, std::milli> time_span = t2 - t1;
+    std::cout << "Rendered in " << time_span.count() << " ms" << std::endl;
+
     // Save result to a PPM image (keep these flags if you compile under Windows)
     std::ofstream ofs("./untitled.ppm", std::ios::out | std::ios::binary);
     ofs << "P6\n" << width << " " << height << "\n255\n";

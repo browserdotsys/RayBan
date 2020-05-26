@@ -48,12 +48,9 @@ impl Vec3 {
     }
 
     fn to_color(&self) -> u32 {
-        //assert!(self.x <= 1.0);
-        //assert!(self.y <= 1.0);
-        //assert!(self.z <= 1.0);
-        (((self.x * 255.99) as u32) << 16) |
-        (((self.y * 255.99) as u32) <<  8) |
-         ((self.z * 255.99) as u32)
+        (((1.0_f32.min(self.x) * 255.0) as u32) << 16) |
+        (((1.0_f32.min(self.y) * 255.0) as u32) <<  8) |
+         ((1.0_f32.min(self.z) * 255.0) as u32)
     }
 }
 
@@ -160,7 +157,7 @@ fn mix(a: f32, b: f32, m: f32) -> f32
     b * m + a * (1.0 - m)
 }
 
-fn trace(rayorig: Vec3, raydir: Vec3, spheres: &Vec<Sphere>, depth: u32, debug: bool) -> Vec3
+fn trace(rayorig: Vec3, raydir: Vec3, spheres: &Vec<Sphere>, depth: u32) -> Vec3
 {
     let mut tnear = f32::INFINITY;
     let mut maybe_sphere : Option<&Sphere> = None;
@@ -184,10 +181,6 @@ fn trace(rayorig: Vec3, raydir: Vec3, spheres: &Vec<Sphere>, depth: u32, debug: 
     let mut nhit = phit - sphere.center;
     nhit.normalize();
 
-    if debug {
-        println!("nhit: {:?}", nhit);
-    }
-
     let mut inside = false;
     let bias = 1e-4_f32;
     if raydir.dot(nhit) > 0.0 {
@@ -200,12 +193,8 @@ fn trace(rayorig: Vec3, raydir: Vec3, spheres: &Vec<Sphere>, depth: u32, debug: 
         let fresneleffect = mix((1.0-facingratio).powf(3.0), 1.0, 0.1);
         let mut refldir = raydir - nhit * 2.0 * raydir.dot(nhit);
         refldir.normalize();
-        if debug {
-            println!("refldir: {:?}", refldir);
-            println!("facingratio: {}", facingratio);
-            println!("fresneleffect: {}", fresneleffect);
-        }
-        let reflection = trace(phit + nhit * bias, refldir, spheres, depth + 1, debug);
+
+        let reflection = trace(phit + nhit * bias, refldir, spheres, depth + 1);
         let mut refraction = Vec3::new_const(0.0);
         if sphere.transparency != 0.0 {
             let ior = 1.1;
@@ -214,23 +203,11 @@ fn trace(rayorig: Vec3, raydir: Vec3, spheres: &Vec<Sphere>, depth: u32, debug: 
             let k = 1.0 - eta * eta * (1.0 - cosi * cosi);
             let mut refrdir = raydir * eta + nhit * (eta * cosi - k.sqrt());
             refrdir.normalize();
-            refraction = trace(phit - nhit * bias, refrdir, spheres, depth + 1, debug);
-            if debug {
-                println!("refrdir: {:?}", refrdir);
-                println!("refraction: {:?}", refraction);
-            }
+            refraction = trace(phit - nhit * bias, refrdir, spheres, depth + 1);
         }
         surface_color = (
             reflection * fresneleffect +
             refraction * (1.0 - fresneleffect) * sphere.transparency) * sphere.surface_color;
-        if debug {
-            println!("surface_color: {:?}", surface_color);
-            println!("reflection: {:?} fresneleffect: {:?} \
-                     refraction: {:?} sphere.transparency: {:?} \
-                     sphere.surface_color: {:?}",
-                     reflection, fresneleffect, refraction,
-                     sphere.transparency, sphere.surface_color);
-        }
     }
     else {
         for (i, s1) in spheres.iter().enumerate() {
@@ -268,11 +245,7 @@ fn render(spheres: &Vec<Sphere>, buffer: &mut Vec<u32>) {
             let yy = (1.0 - 2.0 * ((y as f32 + 0.5) * invheight)) * angle;
             let mut raydir = Vec3::new(xx, yy, -1.0);
             raydir.normalize();
-            let traced = trace(Vec3::new_const(0.0), raydir, spheres, 0, x == 320 && y == 366 && false);
-            if x == 320 && y == 366 && false {
-                println!("xx: {} yy: {} raydir: {:?}", xx, yy, raydir);
-                println!("Debug: 320,366 -> {:?}", traced);
-            }
+            let traced = trace(Vec3::new_const(0.0), raydir, spheres, 0);
             buffer[y*WIDTH+x] = traced.to_color();
         }
     }
@@ -311,16 +284,6 @@ fn main() {
         let ms = start.elapsed().as_millis();
         println!("Rendered in {:?} ms", ms);
 
-        if window.get_mouse_down(MouseButton::Left) {
-            let (x,y) = window.get_mouse_pos(MouseMode::Clamp).unwrap();
-            let xx = x as usize;
-            let yy = y as usize;
-            //println!("{}, {} ({},{})", x, y, xx, yy);
-            println!("({},{}) = {:#x}", xx, yy, buffer[yy*WIDTH+xx]);
-            break;
-        }
-
-        // We unwrap here as we want this code to exit if it fails. Real applications may want to handle this in a different way
         window
             .update_with_buffer(&buffer, WIDTH, HEIGHT)
             .unwrap();
